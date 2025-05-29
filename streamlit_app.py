@@ -12,6 +12,7 @@ import time
 import tempfile
 from typing import Dict, List, Any, Optional
 from datetime import datetime
+import io
 
 # # Import our retail analyzer # WE WILL NOT USE THIS FOR DATA LOADING ANYMORE
 # from retail_analyzer import RetailAnalyzer 
@@ -46,7 +47,6 @@ def load_and_process_data_directly(uploaded_file):
         with open(temp_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
         
-        st.write(f"🔧 DEBUG: Attempting to load Excel from: {temp_path}")
         # Load a few rows to detect header, without setting header yet
         df_peek = pd.read_excel(temp_path, header=None, nrows=15) 
         
@@ -60,12 +60,9 @@ def load_and_process_data_directly(uploaded_file):
 
         header_row_index_in_peek = find_header_row(df_peek_content)
         actual_header_row_in_file = first_valid_index + header_row_index_in_peek
-
-        st.write(f"🔧 DEBUG: Detected header in file at 0-indexed row: {actual_header_row_in_file}")
         
         # Now load the full sheet using the detected header row
         data = pd.read_excel(temp_path, header=actual_header_row_in_file)
-        st.write(f"🔧 DEBUG: Data loaded with detected header. Columns: {data.columns.tolist()}")
         
         # Basic cleaning: remove fully empty rows/cols
         data.dropna(axis=0, how='all', inplace=True)
@@ -73,7 +70,6 @@ def load_and_process_data_directly(uploaded_file):
         
         # Clean column names (simple strip)
         data.columns = [str(col).strip() for col in data.columns]
-        st.write(f"🔧 DEBUG: Cleaned column names: {data.columns.tolist()}")
 
         st.session_state.data = data
         st.session_state.results = {} # Reset results as RetailAnalyzer is not used for main processing
@@ -81,17 +77,11 @@ def load_and_process_data_directly(uploaded_file):
         # Clear any cached YoY summary so it recalculates with new data
         if 'yoy_summary' in st.session_state:
             del st.session_state.yoy_summary
-        
-        st.write(f"🔧 DEBUG: load_and_process_data_directly FINISHED. st.session_state.data is set. Shape: {st.session_state.data.shape if st.session_state.data is not None else 'None'}")
-        st.write(f"🔧 DEBUG: Columns in session_state.data: {st.session_state.data.columns.tolist() if st.session_state.data is not None else 'None'}")
 
         return True, "✅ Data loaded and preprocessed directly!"
         
     except Exception as e:
         st.error(f"❌ Failed to load/process data directly: {e}")
-        # Log the full traceback for detailed debugging
-        import traceback
-        st.text(traceback.format_exc())
         return False, f"❌ Failed to load/process data: {e}"
     finally:
         if temp_path and os.path.exists(temp_path):
@@ -104,25 +94,14 @@ def load_and_process_data_directly(uploaded_file):
 
 def get_data_summary():
     """Get summary of analyzed data for the chatbot - CALCULATE YoY OURSELVES!"""
-    st.write("🔧 DEBUG: get_data_summary CALLED.")
     if 'data' not in st.session_state or st.session_state.data is None:
-        st.write("🔧 DEBUG: get_data_summary: No data in session_state or data is None. Returning None.")
         return None
     
-    st.write(f"🔧 DEBUG: get_data_summary: Data found in session_state. Shape: {st.session_state.data.shape}")
-    st.write(f"🔧 DEBUG: get_data_summary: Columns: {st.session_state.data.columns.tolist()}")
-
     # Check if we already calculated this summary
     if 'yoy_summary' in st.session_state:
-        st.write("🔧 DEBUG: get_data_summary: Returning cached yoy_summary.")
         return st.session_state.yoy_summary
     
     data = st.session_state.data
-    
-    # DEBUG: Show column information
-    st.write("🔧 DEBUG: Available columns in data:")
-    st.write(data.columns.tolist())
-    st.write(f"Data shape: {data.shape}")
     
     # Start with basic info
     summary = {
@@ -140,7 +119,6 @@ def get_data_summary():
     # Check if we have the required columns
     required_data_cols = ['Metric', '52W_TY', '52W_LY', '12W_TY', '12W_LY', '4W_TY', '4W_LY']
     if not all(col in data.columns for col in required_data_cols):
-        st.write("🔧 DEBUG: Missing one or more required columns for YoY calculation (Metric, TY/LY columns). Cannot proceed with detailed YoY.")
         summary['yoy_calculations'] = {"error": "Missing required columns for YoY calculation (needs Metric, and all TY/LY pairs)."}
         st.session_state.yoy_summary = summary # Cache the error state
         return summary
@@ -185,10 +163,9 @@ def get_data_summary():
                         # For now, let's assume if its abs value is < 1.5 it's a decimal representation of percentage.
                         final_avg_for_display = existing_col_avg * 100 # Always multiply by 100 as per user insight
                         
-                        st.write(f"🔧 DEBUG: Found existing YoY column '{col_name}' for period {period_str_simple}, raw avg: {existing_col_avg:.4f}, displayed avg: {final_avg_for_display:.2f}%")
                         return col_name, round(final_avg_for_display, 2)
                 except Exception as e:
-                    st.write(f"🔧 DEBUG: Error processing existing YoY column '{col_name}': {e}")
+                    pass
         return None, None
 
     # --- Period Calculations (52W, 12W, 4W) ---
@@ -243,7 +220,7 @@ def get_data_summary():
 
             yoy_results[f'{period_label}_YoY'] = current_period_results
         else:
-            st.write(f"🔧 DEBUG: Missing {ty_col_name} or {ly_col_name} for {period_label} calculations.")
+            pass
 
     summary["yoy_calculations"] = yoy_results
     
@@ -341,23 +318,8 @@ def handle_chatbot_question(question, data_summary, api_key):
         st.error("Please enter your OpenAI API Key in the sidebar to use the chatbot.")
         return
     
-    # DEBUG: Show what data we're actually sending
-    if data_summary:
-        st.write("🔧 DEBUG: Data being sent to chatbot:")
-        st.write(f"• Dataset info: {data_summary.get('dataset_info', {})}")
-        st.write(f"• YoY calculations: {len(data_summary.get('yoy_calculations', {}))}")
-        if data_summary.get('yoy_calculations'):
-            for key, value in data_summary['yoy_calculations'].items():
-                st.write(f"  - {key}: Avg {value.get('average_growth', 0):.1f}%")
-        st.write(f"• Product performance: {len(data_summary.get('product_performance', {}))}")
-        st.write(f"• Category analysis: {len(data_summary.get('category_analysis', {}))}")
-    else:
-        st.write("🔧 DEBUG: No data summary available!")
-    
     # Add user message
     st.session_state.retail_chatbot_messages.append({"role": "user", "content": question})
-    with st.chat_message("user"):
-        st.markdown(question)
     
     # Generate response
     try:
@@ -417,14 +379,239 @@ Retail Data Analysis:
         
         # Add assistant response
         st.session_state.retail_chatbot_messages.append({"role": "assistant", "content": answer})
-        with st.chat_message("assistant"):
-            st.markdown(answer)
             
     except Exception as e:
         error_message = f"Error generating response: {str(e)}"
         st.session_state.retail_chatbot_messages.append({"role": "assistant", "content": error_message})
-        with st.chat_message("assistant"):
-            st.error(error_message)
+
+
+def create_structured_export_data():
+    """Create structured data for Excel export with YoY calculations, SKU rankings, and category analysis."""
+    if 'data' not in st.session_state or st.session_state.data is None:
+        return None
+    
+    data = st.session_state.data.copy()
+    
+    # Get the data summary with all calculations
+    data_summary = get_data_summary()
+    if not data_summary:
+        return None
+    
+    export_data = {}
+    
+    # 1. MAIN DATA SHEET - Enhanced with calculated YoY metrics
+    main_data = data.copy()
+    
+    # Add calculated YoY metrics for each period
+    required_cols = ['Metric', '52W_TY', '52W_LY', '12W_TY', '12W_LY', '4W_TY', '4W_LY']
+    if all(col in data.columns for col in required_cols):
+        
+        # Calculate YoY for each period
+        for period_label, ty_col, ly_col in [("52W", "52W_TY", "52W_LY"), 
+                                             ("12W", "12W_TY", "12W_LY"), 
+                                             ("4W", "4W_TY", "4W_LY")]:
+            
+            # Convert to numeric
+            ty_numeric = pd.to_numeric(main_data[ty_col], errors='coerce').fillna(0)
+            ly_numeric = pd.to_numeric(main_data[ly_col], errors='coerce').fillna(0)
+            
+            # Calculate absolute change
+            main_data[f'{period_label}_YoY_Abs_Change'] = ty_numeric - ly_numeric
+            
+            # Calculate percentage change
+            main_data[f'{period_label}_YoY_Pct_Change'] = np.where(
+                ly_numeric != 0,
+                ((ty_numeric - ly_numeric) / ly_numeric) * 100,
+                np.nan
+            )
+            
+            # Add growth categories
+            yoy_pct = main_data[f'{period_label}_YoY_Pct_Change']
+            main_data[f'{period_label}_Growth_Category'] = np.where(
+                yoy_pct.isna(), 'Unknown',
+                np.where(yoy_pct >= 15, 'High Growth (15%+)',
+                np.where(yoy_pct >= 5, 'Moderate Growth (5-15%)',
+                np.where(yoy_pct >= -5, 'Stable (-5% to 5%)',
+                np.where(yoy_pct >= -15, 'Moderate Decline (-5% to -15%)',
+                'High Decline (-15%+)'))))
+            )
+    
+    export_data['Main_Data_Enhanced'] = main_data
+    
+    # 2. YOY SUMMARY SHEET
+    yoy_summary_rows = []
+    if 'yoy_calculations' in data_summary:
+        for period, calc_data in data_summary['yoy_calculations'].items():
+            row = {
+                'Period': period,
+                'Calculation_Type': calc_data.get('calculation_type', ''),
+                'Primary_Metric': calc_data.get('primary_metric_for_overall', ''),
+                'Total_TY': calc_data.get('total_primary_metric_ty', 0),
+                'Total_LY': calc_data.get('total_primary_metric_ly', 0),
+                'Overall_Growth_Primary_Metric_Pct': calc_data.get('overall_growth_primary_metric', 0),
+                'Avg_Row_Wise_Growth_Pct': calc_data.get('average_of_row_wise_growth_all_numeric', 0),
+                'StdDev_Row_Wise_Growth': calc_data.get('std_dev_of_row_wise_growth_all_numeric', 0),
+                'Min_Row_Growth_Pct': calc_data.get('min_row_wise_growth_all_numeric', 0),
+                'Max_Row_Growth_Pct': calc_data.get('max_row_wise_growth_all_numeric', 0),
+                'Positive_Rows_Count': calc_data.get('positive_rows_count_all_numeric', 0),
+                'Negative_Rows_Count': calc_data.get('negative_rows_count_all_numeric', 0),
+                'Total_Numeric_Rows': calc_data.get('total_numeric_rows_for_avg', 0),
+                'Existing_Column_Avg': calc_data.get('average_from_existing_column', ''),
+                'Existing_Column_Name': calc_data.get('existing_column_name_used', '')
+            }
+            yoy_summary_rows.append(row)
+    
+    export_data['YoY_Summary'] = pd.DataFrame(yoy_summary_rows)
+    
+    # 3. PRODUCT RANKINGS SHEET
+    if 'Product Name' in data.columns and 'absolute_change_drivers_52w' in data_summary:
+        product_rankings = []
+        
+        # Top positive drivers
+        top_drivers = data_summary['absolute_change_drivers_52w'].get('top_5_positive_drivers', {})
+        for rank, (product, change) in enumerate(top_drivers.items(), 1):
+            product_rankings.append({
+                'Rank': rank,
+                'Product_Name': product,
+                'Absolute_Change_52W': change,
+                'Change_Type': 'Positive Driver',
+                'Period': '52W'
+            })
+        
+        # Top negative drivers
+        bottom_drivers = data_summary['absolute_change_drivers_52w'].get('top_5_negative_drivers', {})
+        for rank, (product, change) in enumerate(bottom_drivers.items(), 1):
+            product_rankings.append({
+                'Rank': rank,
+                'Product_Name': product,
+                'Absolute_Change_52W': change,
+                'Change_Type': 'Negative Driver',
+                'Period': '52W'
+            })
+        
+        # Product performance rankings
+        if 'product_performance' in data_summary:
+            top_performers = data_summary['product_performance'].get('top_10_performers', {})
+            for rank, (product, yoy_pct) in enumerate(top_performers.items(), 1):
+                product_rankings.append({
+                    'Rank': rank,
+                    'Product_Name': product,
+                    'YoY_Growth_Pct_52W': yoy_pct,
+                    'Change_Type': 'Top Performer',
+                    'Period': '52W'
+                })
+            
+            bottom_performers = data_summary['product_performance'].get('bottom_10_performers', {})
+            for rank, (product, yoy_pct) in enumerate(bottom_performers.items(), 1):
+                product_rankings.append({
+                    'Rank': rank,
+                    'Product_Name': product,
+                    'YoY_Growth_Pct_52W': yoy_pct,
+                    'Change_Type': 'Bottom Performer',
+                    'Period': '52W'
+                })
+        
+        export_data['Product_Rankings'] = pd.DataFrame(product_rankings)
+    
+    # 4. CATEGORY ANALYSIS SHEET
+    if 'category_analysis' in data_summary and data_summary['category_analysis'].get('categories'):
+        category_rows = []
+        categories = data_summary['category_analysis']['categories']
+        
+        for category, cat_data in categories.items():
+            category_rows.append({
+                'Category': category,
+                'YoY_Growth_Pct_52W': cat_data.get('yoy_growth', 0),
+                'Product_Count': cat_data.get('product_count', 0),
+                'Metric_Used': data_summary['category_analysis'].get('metric_used', '52W YoY Growth')
+            })
+        
+        # Sort by YoY growth
+        category_df = pd.DataFrame(category_rows)
+        category_df = category_df.sort_values('YoY_Growth_Pct_52W', ascending=False)
+        category_df['Rank'] = range(1, len(category_df) + 1)
+        
+        # Add performance categories
+        category_df['Performance_Category'] = np.where(
+            category_df['YoY_Growth_Pct_52W'] >= 10, 'High Growth',
+            np.where(category_df['YoY_Growth_Pct_52W'] >= 0, 'Growth',
+            np.where(category_df['YoY_Growth_Pct_52W'] >= -10, 'Moderate Decline',
+            'High Decline'))
+        )
+        
+        export_data['Category_Analysis'] = category_df
+    
+    # 5. DETAILED PRODUCT DATA (separated by category if available)
+    if 'Category' in data.columns:
+        for category in data['Category'].unique():
+            if pd.notna(category):
+                category_data = data[data['Category'] == category].copy()
+                
+                # Add YoY calculations for this category subset
+                if all(col in category_data.columns for col in required_cols):
+                    for period_label, ty_col, ly_col in [("52W", "52W_TY", "52W_LY"), 
+                                                         ("12W", "12W_TY", "12W_LY"), 
+                                                         ("4W", "4W_TY", "4W_LY")]:
+                        ty_numeric = pd.to_numeric(category_data[ty_col], errors='coerce').fillna(0)
+                        ly_numeric = pd.to_numeric(category_data[ly_col], errors='coerce').fillna(0)
+                        
+                        category_data[f'{period_label}_YoY_Pct'] = np.where(
+                            ly_numeric != 0,
+                            ((ty_numeric - ly_numeric) / ly_numeric) * 100,
+                            np.nan
+                        )
+                
+                # Clean category name for sheet name (Excel sheet names have restrictions)
+                clean_category_name = str(category).replace('/', '_').replace('\\', '_')[:31]
+                export_data[f'Category_{clean_category_name}'] = category_data
+    
+    # 6. CALCULATION METADATA SHEET
+    metadata_rows = [
+        {'Field': 'Export_Date', 'Value': datetime.now().strftime('%Y-%m-%d %H:%M:%S')},
+        {'Field': 'Total_Records', 'Value': len(data)},
+        {'Field': 'Total_Columns', 'Value': len(data.columns)},
+        {'Field': 'Primary_Metric_Used', 'Value': 'Sales Value (£)'},
+        {'Field': 'YoY_Calculation_Method', 'Value': '(TY - LY) / LY * 100'},
+        {'Field': 'Growth_Categories', 'Value': 'High Growth (15%+), Moderate Growth (5-15%), Stable (-5% to 5%), Moderate Decline (-5% to -15%), High Decline (-15%+)'},
+        {'Field': 'Periods_Analyzed', 'Value': '52W, 12W, 4W'},
+        {'Field': 'Data_Source_Columns', 'Value': ', '.join(data.columns.tolist())}
+    ]
+    
+    export_data['Calculation_Metadata'] = pd.DataFrame(metadata_rows)
+    
+    return export_data
+
+
+def export_to_excel(export_data):
+    """Export the structured data to Excel format."""
+    if not export_data:
+        return None
+    
+    # Create Excel file in memory
+    output = io.BytesIO()
+    
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        for sheet_name, df in export_data.items():
+            # Ensure sheet name is valid for Excel
+            clean_sheet_name = sheet_name[:31]  # Excel limit
+            df.to_excel(writer, sheet_name=clean_sheet_name, index=False)
+            
+            # Auto-adjust column widths
+            worksheet = writer.sheets[clean_sheet_name]
+            for column in worksheet.columns:
+                max_length = 0
+                column_letter = column[0].column_letter
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = min(max_length + 2, 50)  # Cap at 50 characters
+                worksheet.column_dimensions[column_letter].width = adjusted_width
+    
+    output.seek(0)
+    return output
 
 
 def main():
@@ -506,6 +693,53 @@ def main():
                             st.write(f"• {calc_name}: {avg_growth:.1f}%")
             else:
                 st.metric("YoY Calculations", 0)
+            
+            # Export functionality
+            st.header("📤 Export Data")
+            st.write("Export your processed data with YoY calculations, SKU rankings, and category analysis.")
+            
+            if st.button("🔄 Generate Structured Export", type="secondary"):
+                with st.spinner("Creating structured export data..."):
+                    export_data = create_structured_export_data()
+                    
+                    if export_data:
+                        excel_file = export_to_excel(export_data)
+                        
+                        if excel_file:
+                            # Generate filename with timestamp
+                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                            filename = f"retail_analysis_export_{timestamp}.xlsx"
+                            
+                            st.success(f"✅ Export ready! Contains {len(export_data)} sheets with comprehensive analysis.")
+                            
+                            # Show what's included in the export
+                            st.write("**Export includes:**")
+                            sheet_descriptions = {
+                                'Main_Data_Enhanced': 'Original data + calculated YoY metrics',
+                                'YoY_Summary': 'Summary of all YoY calculations',
+                                'Product_Rankings': 'Top/bottom performers and drivers',
+                                'Category_Analysis': 'Category performance rankings',
+                                'Calculation_Metadata': 'Export details and methodology'
+                            }
+                            
+                            for sheet_name in export_data.keys():
+                                if sheet_name in sheet_descriptions:
+                                    st.write(f"• **{sheet_name}**: {sheet_descriptions[sheet_name]}")
+                                elif sheet_name.startswith('Category_'):
+                                    st.write(f"• **{sheet_name}**: Detailed data for this category")
+                            
+                            # Download button
+                            st.download_button(
+                                label="📥 Download Excel File",
+                                data=excel_file,
+                                file_name=filename,
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                type="primary"
+                            )
+                        else:
+                            st.error("❌ Failed to create Excel file.")
+                    else:
+                        st.error("❌ No data available for export. Please load and analyze data first.")
         
         # Example questions
         st.header("💡 Example Questions")
@@ -535,14 +769,9 @@ def main():
             data_summary = get_data_summary()
             handle_chatbot_question(pending, data_summary, api_key)
         else:
-            st.session_state.retail_chatbot_messages.append({"role": "user", "content": pending})
-            with st.chat_message("user"):
-                st.markdown(pending)
-            
             error_msg = "❌ Please enter your OpenAI API Key in the sidebar to use the chatbot."
+            st.session_state.retail_chatbot_messages.append({"role": "user", "content": pending})
             st.session_state.retail_chatbot_messages.append({"role": "assistant", "content": error_msg})
-            with st.chat_message("assistant"):
-                st.error(error_msg)
     
     # Display chat messages from history
     for message in st.session_state.retail_chatbot_messages:
@@ -555,14 +784,9 @@ def main():
             data_summary = get_data_summary()
             handle_chatbot_question(prompt, data_summary, api_key)
         else:
-            st.session_state.retail_chatbot_messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
-            
             error_msg = "❌ Please enter your OpenAI API Key in the sidebar to use the chatbot."
+            st.session_state.retail_chatbot_messages.append({"role": "user", "content": prompt})
             st.session_state.retail_chatbot_messages.append({"role": "assistant", "content": error_msg})
-            with st.chat_message("assistant"):
-                st.error(error_msg)
 
 
 if __name__ == "__main__":
