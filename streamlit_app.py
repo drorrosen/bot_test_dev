@@ -518,13 +518,29 @@ def create_structured_export_data():
         category_rows = []
         categories = data_summary['category_analysis']['categories']
         
-        for category, cat_data in categories.items():
-            category_rows.append({
-                'Category': category,
-                'YoY_Growth_Pct_52W': cat_data.get('yoy_growth', 0),
-                'Product_Count': cat_data.get('product_count', 0),
-                'Metric_Used': data_summary['category_analysis'].get('metric_used', '52W YoY Growth')
-            })
+        for category in data['Category'].unique():
+            if pd.notna(category):
+                category_data = data[data['Category'] == category]
+                if '52W_TY' in data.columns and '52W_LY' in data.columns:
+                    ty_sum = pd.to_numeric(category_data['52W_TY'], errors='coerce').fillna(0).sum()
+                    ly_sum = pd.to_numeric(category_data['52W_LY'], errors='coerce').fillna(0).sum()
+                    
+                    if ly_sum != 0:
+                        cat_yoy = ((ty_sum - ly_sum) / ly_sum) * 100
+                    else:
+                        cat_yoy = 0
+                    
+                    category_performance = {
+                        "yoy_growth": cat_yoy,
+                        "product_count": len(category_data)
+                    }
+                    
+                    category_rows.append({
+                        'Category': category,
+                        'YoY_Growth_Pct_52W': cat_yoy,
+                        'Product_Count': len(category_data),
+                        'Metric_Used': data_summary['category_analysis'].get('metric_used', '52W YoY Growth')
+                    })
         
         # Sort by YoY growth
         category_df = pd.DataFrame(category_rows)
@@ -614,6 +630,223 @@ def export_to_excel(export_data):
     return output
 
 
+def create_compact_export_data():
+    """Create a single, comprehensive Excel sheet with all YoY calculations, rankings, and analysis."""
+    if 'data' not in st.session_state or st.session_state.data is None:
+        return None
+    
+    data = st.session_state.data.copy()
+    data_summary = get_data_summary()
+    if not data_summary:
+        return None
+    
+    # Start with the main data and enhance it
+    enhanced_data = data.copy()
+    
+    # Add calculated YoY metrics for each period
+    required_cols = ['Metric', '52W_TY', '52W_LY', '12W_TY', '12W_LY', '4W_TY', '4W_LY']
+    if all(col in data.columns for col in required_cols):
+        
+        # Calculate YoY for each period
+        for period_label, ty_col, ly_col in [("52W", "52W_TY", "52W_LY"), 
+                                             ("12W", "12W_TY", "12W_LY"), 
+                                             ("4W", "4W_TY", "4W_LY")]:
+            
+            # Convert to numeric
+            ty_numeric = pd.to_numeric(enhanced_data[ty_col], errors='coerce').fillna(0)
+            ly_numeric = pd.to_numeric(enhanced_data[ly_col], errors='coerce').fillna(0)
+            
+            # Calculate absolute change
+            enhanced_data[f'{period_label}_YoY_Abs'] = ty_numeric - ly_numeric
+            
+            # Calculate percentage change
+            enhanced_data[f'{period_label}_YoY_Pct'] = np.where(
+                ly_numeric != 0,
+                ((ty_numeric - ly_numeric) / ly_numeric) * 100,
+                np.nan
+            )
+            
+            # Add growth categories
+            yoy_pct = enhanced_data[f'{period_label}_YoY_Pct']
+            enhanced_data[f'{period_label}_Growth_Category'] = np.where(
+                yoy_pct.isna(), 'Unknown',
+                np.where(yoy_pct >= 15, 'High Growth',
+                np.where(yoy_pct >= 5, 'Moderate Growth',
+                np.where(yoy_pct >= -5, 'Stable',
+                np.where(yoy_pct >= -15, 'Moderate Decline',
+                'High Decline'))))
+            )
+    
+    # Add product performance rankings
+    if 'Product Name' in enhanced_data.columns and 'product_performance' in data_summary:
+        # Create ranking dictionaries
+        top_performers = data_summary['product_performance'].get('top_10_performers', {})
+        bottom_performers = data_summary['product_performance'].get('bottom_10_performers', {})
+        
+        # Add performance rank column
+        enhanced_data['Product_Performance_Rank'] = ''
+        enhanced_data['Product_Performance_Category'] = ''
+        
+        for rank, (product, yoy_pct) in enumerate(top_performers.items(), 1):
+            mask = enhanced_data['Product Name'] == product
+            enhanced_data.loc[mask, 'Product_Performance_Rank'] = f'Top {rank}'
+            enhanced_data.loc[mask, 'Product_Performance_Category'] = 'Top Performer'
+        
+        for rank, (product, yoy_pct) in enumerate(bottom_performers.items(), 1):
+            mask = enhanced_data['Product Name'] == product
+            enhanced_data.loc[mask, 'Product_Performance_Rank'] = f'Bottom {rank}'
+            enhanced_data.loc[mask, 'Product_Performance_Category'] = 'Bottom Performer'
+    
+    # Add absolute change driver rankings
+    if 'absolute_change_drivers_52w' in data_summary:
+        enhanced_data['Absolute_Change_Driver_Type'] = ''
+        enhanced_data['Absolute_Change_Driver_Rank'] = ''
+        
+        top_drivers = data_summary['absolute_change_drivers_52w'].get('top_5_positive_drivers', {})
+        for rank, (product, change) in enumerate(top_drivers.items(), 1):
+            mask = enhanced_data['Product Name'] == product
+            enhanced_data.loc[mask, 'Absolute_Change_Driver_Type'] = 'Positive Driver'
+            enhanced_data.loc[mask, 'Absolute_Change_Driver_Rank'] = rank
+        
+        bottom_drivers = data_summary['absolute_change_drivers_52w'].get('top_5_negative_drivers', {})
+        for rank, (product, change) in enumerate(bottom_drivers.items(), 1):
+            mask = enhanced_data['Product Name'] == product
+            enhanced_data.loc[mask, 'Absolute_Change_Driver_Type'] = 'Negative Driver'
+            enhanced_data.loc[mask, 'Absolute_Change_Driver_Rank'] = rank
+    
+    # Add category performance info
+    if 'Category' in enhanced_data.columns and 'category_analysis' in data_summary:
+        categories = data_summary['category_analysis'].get('categories', {})
+        
+        enhanced_data['Category_YoY_Growth'] = ''
+        enhanced_data['Category_Performance_Rank'] = ''
+        
+        # Sort categories by performance for ranking
+        sorted_categories = sorted(categories.items(), 
+                                 key=lambda x: x[1].get('yoy_growth', 0), 
+                                 reverse=True)
+        
+        for rank, (category, cat_data) in enumerate(sorted_categories, 1):
+            mask = enhanced_data['Category'] == category
+            enhanced_data.loc[mask, 'Category_YoY_Growth'] = f"{cat_data.get('yoy_growth', 0):.1f}%"
+            enhanced_data.loc[mask, 'Category_Performance_Rank'] = rank
+    
+    # Reorder columns for better readability
+    column_order = []
+    
+    # Core identification columns first
+    if 'Product Name' in enhanced_data.columns:
+        column_order.append('Product Name')
+    if 'Category' in enhanced_data.columns:
+        column_order.append('Category')
+    if 'Metric' in enhanced_data.columns:
+        column_order.append('Metric')
+    
+    # Original TY/LY data
+    for period in ['52W', '12W', '4W']:
+        for suffix in ['_TY', '_LY']:
+            col = period + suffix
+            if col in enhanced_data.columns:
+                column_order.append(col)
+    
+    # Calculated YoY metrics
+    for period in ['52W', '12W', '4W']:
+        for suffix in ['_YoY_Abs', '_YoY_Pct', '_Growth_Category']:
+            col = period + suffix
+            if col in enhanced_data.columns:
+                column_order.append(col)
+    
+    # Original YoY columns from source data
+    for col in enhanced_data.columns:
+        if 'w/e change' in col and col not in column_order:
+            column_order.append(col)
+    
+    # Performance and ranking columns
+    ranking_cols = [
+        'Product_Performance_Rank', 'Product_Performance_Category',
+        'Absolute_Change_Driver_Type', 'Absolute_Change_Driver_Rank',
+        'Category_YoY_Growth', 'Category_Performance_Rank'
+    ]
+    for col in ranking_cols:
+        if col in enhanced_data.columns:
+            column_order.append(col)
+    
+    # Any remaining columns
+    for col in enhanced_data.columns:
+        if col not in column_order:
+            column_order.append(col)
+    
+    # Reorder the DataFrame
+    enhanced_data = enhanced_data[column_order]
+    
+    return enhanced_data
+
+
+def export_compact_to_excel(enhanced_data):
+    """Export the compact data to Excel format with formatting."""
+    if enhanced_data is None:
+        return None
+    
+    # Create Excel file in memory
+    output = io.BytesIO()
+    
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # Write the main data
+        enhanced_data.to_excel(writer, sheet_name='Retail_Analysis_Complete', index=False)
+        
+        # Get the worksheet for formatting
+        worksheet = writer.sheets['Retail_Analysis_Complete']
+        
+        # Auto-adjust column widths
+        for column in worksheet.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)  # Cap at 50 characters
+            worksheet.column_dimensions[column_letter].width = adjusted_width
+        
+        # Add some basic formatting
+        from openpyxl.styles import Font, PatternFill, Alignment
+        
+        # Header formatting
+        header_font = Font(bold=True)
+        header_fill = PatternFill(start_color="E6E6FA", end_color="E6E6FA", fill_type="solid")
+        
+        for cell in worksheet[1]:  # First row (headers)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center")
+        
+        # Highlight top/bottom performers
+        green_fill = PatternFill(start_color="E6FFE6", end_color="E6FFE6", fill_type="solid")
+        red_fill = PatternFill(start_color="FFE6E6", end_color="FFE6E6", fill_type="solid")
+        
+        # Find performance category column
+        perf_cat_col = None
+        for idx, col in enumerate(enhanced_data.columns, 1):
+            if col == 'Product_Performance_Category':
+                perf_cat_col = idx
+                break
+        
+        if perf_cat_col:
+            for row_num in range(2, len(enhanced_data) + 2):  # Start from row 2 (after header)
+                cell_value = worksheet.cell(row=row_num, column=perf_cat_col).value
+                if cell_value == 'Top Performer':
+                    for col_num in range(1, len(enhanced_data.columns) + 1):
+                        worksheet.cell(row=row_num, column=col_num).fill = green_fill
+                elif cell_value == 'Bottom Performer':
+                    for col_num in range(1, len(enhanced_data.columns) + 1):
+                        worksheet.cell(row=row_num, column=col_num).fill = red_fill
+    
+    output.seek(0)
+    return output
+
+
 def main():
     """Main Streamlit application - USING WORKING PATTERN"""
     st.set_page_config(
@@ -698,48 +931,89 @@ def main():
             st.header("📤 Export Data")
             st.write("Export your processed data with YoY calculations, SKU rankings, and category analysis.")
             
-            if st.button("🔄 Generate Structured Export", type="secondary"):
-                with st.spinner("Creating structured export data..."):
-                    export_data = create_structured_export_data()
+            # Compact single sheet export (recommended)
+            if st.button("📊 Generate Compact Export (Single Sheet)", type="primary"):
+                with st.spinner("Creating compact export data..."):
+                    compact_data = create_compact_export_data()
                     
-                    if export_data:
-                        excel_file = export_to_excel(export_data)
+                    if compact_data is not None:
+                        excel_file = export_compact_to_excel(compact_data)
                         
                         if excel_file:
                             # Generate filename with timestamp
                             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                            filename = f"retail_analysis_export_{timestamp}.xlsx"
+                            filename = f"retail_analysis_compact_{timestamp}.xlsx"
                             
-                            st.success(f"✅ Export ready! Contains {len(export_data)} sheets with comprehensive analysis.")
+                            st.success(f"✅ Compact export ready! Single sheet with {len(compact_data)} rows and comprehensive analysis.")
                             
-                            # Show what's included in the export
-                            st.write("**Export includes:**")
-                            sheet_descriptions = {
-                                'Main_Data_Enhanced': 'Original data + calculated YoY metrics',
-                                'YoY_Summary': 'Summary of all YoY calculations',
-                                'Product_Rankings': 'Top/bottom performers and drivers',
-                                'Category_Analysis': 'Category performance rankings',
-                                'Calculation_Metadata': 'Export details and methodology'
-                            }
-                            
-                            for sheet_name in export_data.keys():
-                                if sheet_name in sheet_descriptions:
-                                    st.write(f"• **{sheet_name}**: {sheet_descriptions[sheet_name]}")
-                                elif sheet_name.startswith('Category_'):
-                                    st.write(f"• **{sheet_name}**: Detailed data for this category")
+                            # Show what's included in the compact export
+                            st.write("**Compact export includes:**")
+                            st.write("• **All original data** with cleaned column structure")
+                            st.write("• **Calculated YoY metrics** for 52W, 12W, and 4W periods")
+                            st.write("• **Growth categorization** (High Growth, Moderate, Stable, Decline)")
+                            st.write("• **Product performance rankings** (Top/Bottom performers)")
+                            st.write("• **Absolute change drivers** (Positive/Negative impact)")
+                            st.write("• **Category performance** with rankings")
+                            st.write("• **Visual formatting** (green for top, red for bottom performers)")
                             
                             # Download button
                             st.download_button(
-                                label="📥 Download Excel File",
+                                label="📥 Download Compact Excel File",
                                 data=excel_file,
                                 file_name=filename,
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                 type="primary"
                             )
                         else:
-                            st.error("❌ Failed to create Excel file.")
+                            st.error("❌ Failed to create compact Excel file.")
                     else:
                         st.error("❌ No data available for export. Please load and analyze data first.")
+            
+            # Multi-sheet detailed export (for comprehensive analysis)
+            with st.expander("🔧 Advanced: Multi-Sheet Export"):
+                st.write("Generate detailed export with separate sheets for different analyses.")
+                
+                if st.button("🔄 Generate Multi-Sheet Export", type="secondary"):
+                    with st.spinner("Creating detailed export data..."):
+                        export_data = create_structured_export_data()
+                        
+                        if export_data:
+                            excel_file = export_to_excel(export_data)
+                            
+                            if excel_file:
+                                # Generate filename with timestamp
+                                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                                filename = f"retail_analysis_detailed_{timestamp}.xlsx"
+                                
+                                st.success(f"✅ Detailed export ready! Contains {len(export_data)} sheets with comprehensive analysis.")
+                                
+                                # Show what's included in the export
+                                st.write("**Detailed export includes:**")
+                                sheet_descriptions = {
+                                    'Main_Data_Enhanced': 'Original data + calculated YoY metrics',
+                                    'YoY_Summary': 'Summary of all YoY calculations',
+                                    'Product_Rankings': 'Top/bottom performers and drivers',
+                                    'Category_Analysis': 'Category performance rankings',
+                                    'Calculation_Metadata': 'Export details and methodology'
+                                }
+                                
+                                for sheet_name in export_data.keys():
+                                    if sheet_name in sheet_descriptions:
+                                        st.write(f"• **{sheet_name}**: {sheet_descriptions[sheet_name]}")
+                                    elif sheet_name.startswith('Category_'):
+                                        st.write(f"• **{sheet_name}**: Detailed data for this category")
+                                
+                                # Download button
+                                st.download_button(
+                                    label="📥 Download Detailed Excel File",
+                                    data=excel_file,
+                                    file_name=filename,
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                )
+                            else:
+                                st.error("❌ Failed to create detailed Excel file.")
+                        else:
+                            st.error("❌ No data available for export. Please load and analyze data first.")
         
         # Example questions
         st.header("💡 Example Questions")
