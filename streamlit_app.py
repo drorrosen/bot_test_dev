@@ -677,6 +677,32 @@ def create_compact_export_data():
                 'High Decline'))))
             )
     
+    # Add SKU Ranks and Category-level YoY for all periods
+    for period_label in ["52W", "12W", "4W"]:
+        ty_col = f'{period_label}_TY'
+        ly_col = f'{period_label}_LY'
+        
+        # Add SKU Rank by Category and Metric for the period's TY
+        if 'Category' in enhanced_data.columns and 'Metric' in enhanced_data.columns and ty_col in enhanced_data.columns:
+            ty_numeric = pd.to_numeric(enhanced_data[ty_col], errors='coerce')
+            enhanced_data[f'{period_label}_SKU_Rank_In_Category'] = ty_numeric.groupby([enhanced_data['Category'], enhanced_data['Metric']]).rank(method='dense', ascending=False)
+
+        # Add Category-level YoY Change for the period
+        if 'Category' in enhanced_data.columns and 'Metric' in enhanced_data.columns and ty_col in enhanced_data.columns and ly_col in enhanced_data.columns:
+            ty_numeric = pd.to_numeric(enhanced_data[ty_col], errors='coerce').fillna(0)
+            ly_numeric = pd.to_numeric(enhanced_data[ly_col], errors='coerce').fillna(0)
+            
+            # Calculate category-level sums for TY and LY
+            category_ty_sum = ty_numeric.groupby([enhanced_data['Category'], enhanced_data['Metric']]).transform('sum')
+            category_ly_sum = ly_numeric.groupby([enhanced_data['Category'], enhanced_data['Metric']]).transform('sum')
+            
+            # Calculate YoY change at category level
+            enhanced_data[f'{period_label}_Total_Category_YoY_Change_Pct'] = np.where(
+                category_ly_sum != 0,
+                ((category_ty_sum - category_ly_sum) / category_ly_sum) * 100,
+                np.nan
+            )
+
     # Add product performance rankings
     if 'Product Name' in enhanced_data.columns and 'product_performance' in data_summary:
         # Create ranking dictionaries
@@ -700,36 +726,16 @@ def create_compact_export_data():
     # Add absolute change driver rankings
     if 'absolute_change_drivers_52w' in data_summary:
         enhanced_data['Absolute_Change_Driver_Type'] = ''
-        enhanced_data['Absolute_Change_Driver_Rank'] = ''
         
         top_drivers = data_summary['absolute_change_drivers_52w'].get('top_5_positive_drivers', {})
-        for rank, (product, change) in enumerate(top_drivers.items(), 1):
+        for product in top_drivers.keys():
             mask = enhanced_data['Product Name'] == product
             enhanced_data.loc[mask, 'Absolute_Change_Driver_Type'] = 'Positive Driver'
-            enhanced_data.loc[mask, 'Absolute_Change_Driver_Rank'] = rank
         
         bottom_drivers = data_summary['absolute_change_drivers_52w'].get('top_5_negative_drivers', {})
-        for rank, (product, change) in enumerate(bottom_drivers.items(), 1):
+        for product in bottom_drivers.keys():
             mask = enhanced_data['Product Name'] == product
             enhanced_data.loc[mask, 'Absolute_Change_Driver_Type'] = 'Negative Driver'
-            enhanced_data.loc[mask, 'Absolute_Change_Driver_Rank'] = rank
-    
-    # Add category performance info
-    if 'Category' in enhanced_data.columns and 'category_analysis' in data_summary:
-        categories = data_summary['category_analysis'].get('categories', {})
-        
-        enhanced_data['Category_YoY_Growth'] = ''
-        enhanced_data['Category_Performance_Rank'] = ''
-        
-        # Sort categories by performance for ranking
-        sorted_categories = sorted(categories.items(), 
-                                 key=lambda x: x[1].get('yoy_growth', 0), 
-                                 reverse=True)
-        
-        for rank, (category, cat_data) in enumerate(sorted_categories, 1):
-            mask = enhanced_data['Category'] == category
-            enhanced_data.loc[mask, 'Category_YoY_Growth'] = f"{cat_data.get('yoy_growth', 0):.1f}%"
-            enhanced_data.loc[mask, 'Category_Performance_Rank'] = rank
     
     # Reorder columns for better readability
     column_order = []
@@ -751,7 +757,7 @@ def create_compact_export_data():
     
     # Calculated YoY metrics
     for period in ['52W', '12W', '4W']:
-        for suffix in ['_YoY_Abs', '_YoY_Pct', '_Growth_Category']:
+        for suffix in ['_YoY_Abs', '_YoY_Pct', '_Growth_Category', '_SKU_Rank_In_Category', '_Total_Category_YoY_Change_Pct']:
             col = period + suffix
             if col in enhanced_data.columns:
                 column_order.append(col)
@@ -764,8 +770,7 @@ def create_compact_export_data():
     # Performance and ranking columns
     ranking_cols = [
         'Product_Performance_Rank', 'Product_Performance_Category',
-        'Absolute_Change_Driver_Type', 'Absolute_Change_Driver_Rank',
-        'Category_YoY_Growth', 'Category_Performance_Rank'
+        'Absolute_Change_Driver_Type'
     ]
     for col in ranking_cols:
         if col in enhanced_data.columns:
@@ -953,7 +958,6 @@ def main():
                             st.write("• **Growth categorization** (High Growth, Moderate, Stable, Decline)")
                             st.write("• **Product performance rankings** (Top/Bottom performers)")
                             st.write("• **Absolute change drivers** (Positive/Negative impact)")
-                            st.write("• **Category performance** with rankings")
                             st.write("• **Visual formatting** (green for top, red for bottom performers)")
                             
                             # Download button
