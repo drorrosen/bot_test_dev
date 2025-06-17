@@ -737,6 +737,40 @@ def create_compact_export_data():
             mask = enhanced_data['Product Name'] == product
             enhanced_data.loc[mask, 'Absolute_Change_Driver_Type'] = 'Negative Driver'
     
+    # Sort the data based on user feedback (Category -> Metric priority)
+    if 'Category' in enhanced_data.columns and 'Metric' in enhanced_data.columns:
+        # Get all unique metrics from the data
+        all_metrics = enhanced_data['Metric'].unique()
+        
+        # Define the desired order keywords
+        priority_keywords = ['value', 'unit', 'ros', 'price']
+        
+        sorted_metrics = []
+        remaining_metrics = list(all_metrics)
+        
+        # Go through keywords and add matching metrics to the sorted list
+        for keyword in priority_keywords:
+            # Find metrics that contain the keyword (case-insensitive)
+            matches = [m for m in remaining_metrics if keyword in str(m).lower()]
+            if matches:
+                # Sort matches alphabetically to have a consistent order for similar names
+                matches.sort()
+                sorted_metrics.extend(matches)
+                # Remove the found matches from the remaining list
+                for match in matches:
+                    remaining_metrics.remove(match)
+
+        # Add any other metrics that didn't match the keywords, sorted alphabetically
+        remaining_metrics.sort()
+        sorted_metrics.extend(remaining_metrics)
+
+        # Create a categorical type with the determined order
+        metric_cat_type = pd.api.types.CategoricalDtype(categories=sorted_metrics, ordered=True)
+        enhanced_data['Metric'] = enhanced_data['Metric'].astype(metric_cat_type)
+        
+        # Sort the DataFrame
+        enhanced_data = enhanced_data.sort_values(by=['Category', 'Metric'])
+
     # Reorder columns for better readability
     column_order = []
     
